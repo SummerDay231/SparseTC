@@ -1,0 +1,12 @@
+# python
+*.pyc
+*.pkl
+
+Untitled-1.ipynb
+test/Abuf.txt
+test/Acol.txt
+test/Bbuf.txt
+test/Cbuf.txt
+test/ctrl_info.txt
+test/Dbuf.txt
+.vscode/
