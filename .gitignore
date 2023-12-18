@@ -10,3 +10,7 @@ test/Cbuf.txt
 test/ctrl_info.txt
 test/Dbuf.txt
 .vscode/
+kernel_verilog/sim/basic/Cbuf.txt
+kernel_verilog/sim/basic/Abuf.txt
+kernel_verilog/sim/basic/Bbuf.txt
+kernel_verilog/sim/basic/Dbuf.txt

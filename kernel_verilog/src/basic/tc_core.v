@@ -1,192 +1,145 @@
 `timescale 1ns / 1ps
 
 module tc_core #(
-    parameter M = 32,
-    parameter N = 32,
-    parameter K = 32,
+    parameter M = 16,
+    parameter N = 16,
+    parameter K = 16,
     parameter TILE_M = 4,
-    parameter TILE_K = 8,
     parameter TILE_N = 4,
-    parameter iterM = M / TILE_M,
-    parameter iterN = N / TILE_N,
-    parameter iterK = K / TILE_K,
-    parameter N_UNIT = TILE_M * TILE_K * TILE_N,
-    parameter DW_IN = 8,
-    parameter DW_POS = 4,
-    parameter DW_OUT = 8
+    parameter TILE_K = 4,
+    parameter TILE_SIZE = 16,
+    parameter NUM_TILE = 16,
+    parameter N_PE = 4,
+    parameter N_UNIT = 64,
+    parameter DW_DATA = 32,
+    parameter DW_IDX = 4,
+    parameter DW_MEM = 512
 ) (
     input clk,
     input reset,
+    // control signal
     input load_en,
     input compute_en,
-    input [M*K*DW_IN-1:0] in_a,
-    input [K*N*DW_IN-1:0] in_b,
-    output [M*N*DW_OUT-1:0] out
+    // A input
+    input write_a,
+    input [DW_MEM-1:0] A_input,
+    input [DW_IDX-1:0] A_row,
+    // B input
+    input write_b,
+    input [DW_MEM-1:0] B_input,
+    input [DW_IDX-1:0] B_row,
+    // C input
+    input write_c,
+    input [DW_MEM-1:0] C_input,
+    input [DW_IDX-1:0] C_row,
+    // D output
+    output out_valid,
+    output [DW_MEM-1:0] D_row_out
 );
 
-    parameter IDLE = 2'd0;
-    parameter LOAD = 2'd1;
-    parameter COMPUTE = 2'd2;
-    integer i, j;
-    genvar gi, gj;
-    
-    reg [1:0] state, next_state;
+    wire write_d;
+    wire [DW_IDX-1:0] ptr_m, ptr_k, ptr_n, D_row;
+    wire [DW_IDX-1:0] ptr_A, ptr_B, ptr_C, ptr_D;
+    wire [TILE_SIZE*DW_DATA-1:0] A_tile, B_tile, C_tile, D_tile;
+    wire [N_UNIT*DW_DATA-1:0] mult_A, mult_B, mult_result;
 
-    reg [DW_IN-1:0] reg_a [M-1:0][K-1:0];
-    reg [DW_IN-1:0] reg_b [K-1:0][N-1:0];
-    reg [DW_IN-1:0] reg_tile_a [TILE_M-1:0][TILE_K-1:0];
-    reg [DW_IN-1:0] reg_tile_b [TILE_K-1:0][TILE_N-1:0];
-    reg [3:0]  ptr_m, ptr_n, ptr_k;
-    reg out_en, input_en;
+    assign ptr_A = {ptr_m[3:2], ptr_k[3:2]};
+    assign ptr_B = {ptr_k[3:2], ptr_n[3:2]};
+    assign ptr_C = {ptr_m[3:2], ptr_n[3:2]};
 
-    wire [TILE_M*TILE_K*DW_IN-1:0] wire_tile_a;
-    wire [TILE_N*TILE_K*DW_IN-1:0] wire_tile_b;
-    wire [TILE_M*TILE_N*DW_OUT-1:0] wire_compute_result;
-    wire [3:0] col_n, row_m;
-    wire out_valid, col_valid, row_valid, psum_input_en, psum_input_en_valid;
 
-    // state transfer and control
-    always @(posedge clk) begin
-        if (reset) begin
-            next_state <= IDLE;
-            out_en <= 0;
-            input_en <= 0;
-        end
-        else begin
-            if (load_en != 0)
-                next_state <= 1;
-            else if (compute_en) begin
-                next_state <= COMPUTE;
-                input_en <= 1;
-            end
-            if (state==LOAD) begin
-                for (i=0; i<M; i=i+1) begin
-                    for (j=0; j<K; j=j+1) begin
-                        reg_a[i][j] <= in_a[(i*K+j)*DW_IN +:DW_IN];
-                    end
-                end
-                for (i=0; i<K; i=i+1) begin
-                    for (j=0; j<N; j=j+1) begin
-                        reg_b[i][j] <= in_b[(i*N+j)*DW_IN +:DW_IN];
-                    end
-                end
-                ptr_m <= 0;
-                ptr_n <= 0;
-                ptr_k <= 0;
-            end
-            else if (state==COMPUTE) begin
-                if (ptr_m == M - TILE_M) begin
-                    if (ptr_k == K - TILE_K) begin
-                        if (ptr_n == N - TILE_N) begin
-                            next_state <= IDLE;
-                        end
-                        else begin
-                            ptr_m <= 0;
-                            ptr_k <= 0;
-                            ptr_n <= ptr_n+TILE_N;
-                        end
-                    end
-                    else begin
-                        ptr_m <= 0;
-                        ptr_k <= ptr_k + TILE_K;
-                    end
-                end
-                else begin
-                    ptr_m <= ptr_m + TILE_M;
-                end
-            end
-        end
-    end
+    tc_cu #(
+        .M(M)
+    ) u_cu (
+        .clk(clk),
+        .reset(reset),
+        .load_en(load_en),
+        .compute_en(compute_en),
+        .ptr_m(ptr_m),
+        .ptr_k(ptr_k),
+        .ptr_n(ptr_n),
+        .write_d(write_d),
+        .out_valid(out_valid),
+        .row_out(D_row)
+    );
 
-    // select tile
-    always @(posedge clk) begin: a1
-        for (i=0; i<TILE_M; i=i+1) begin
-            for (j=0; j<TILE_K; j=j+1) begin
-                reg_tile_a[i][j] <= reg_a[ptr_m+i][ptr_k+j];
-            end
-        end
-        for (i=0; i<TILE_K; i=i+1) begin
-            for (j=0; j<TILE_N; j=j+1) begin
-                reg_tile_b[i][j] <= reg_b[ptr_k+i][ptr_n+j];
-            end
-        end
-    end
+    tc_Abuffer #(
+        .DW_DATA(DW_DATA)
+    ) u_Abuf (
+        .clk(clk),
+        .reset(reset),
+        .write_en(write_a),
+        .A_input(A_input),
+        .row_in(A_row),
+        .ptr_out(ptr_A),
+        .A_tile(A_tile)
+    );
 
-    always @(posedge clk) begin
-        state <= next_state;
-    end
+    tc_Bbuffer #(
+        .DW_DATA(DW_DATA)
+    ) u_Bbuf (
+        .clk(clk),
+        .reset(reset),
+        .write_en(write_b),
+        .B_input(B_input),
+        .row_in(B_row),
+        .ptr_out(ptr_B),
+        .B_tile(B_tile)
+    );
 
-    generate
-        for (gi=0; gi<TILE_M; gi=gi+1) begin
-            for (gj=0; gj<TILE_K; gj=gj+1) begin
-                assign wire_tile_a[(gi*TILE_K+gj)*DW_IN +:DW_IN] = reg_tile_a[gi][gj];
-            end
-        end
-        for (gi=0; gi<TILE_K; gi=gi+1) begin
-            for (gj=0; gj<TILE_N; gj=gj+1) begin
-                assign wire_tile_b[(gi*TILE_N+gj)*DW_IN +:DW_IN] = reg_tile_b[gi][gj];
-            end
-        end
-    endgenerate
+    tc_A_DN #(
+        .DW_DATA(DW_DATA)
+    ) u_A_DN (
+        .clk(clk),
+        .reset(reset),
+        .in_a(A_tile),
+        .out_a(mult_A)
+    );
 
-delay_unit #(
-    .DW_DATA(DW_POS),
-    .W_SHIFT(6)
-) u_delay_col (
-    .clk(clk),
-    .reset(reset),
-    .enable(1),
-    .in(ptr_n),
-    .out_valid(col_valid),
-    .out(col_n)
-);
-delay_unit #(
-    .DW_DATA(DW_POS),
-    .W_SHIFT(6)
-) u_delay_row (
-    .clk(clk),
-    .reset(reset),
-    .enable(1),
-    .in(ptr_m),
-    .out_valid(row_valid),
-    .out(row_m)
-);
-delay_unit #(
-    .DW_DATA(1),
-    .W_SHIFT(6)
-) u_delay_input_en (
-    .clk(clk),
-    .reset(reset),
-    .enable(1),
-    .in(input_en),
-    .out_valid(psum_input_en_valid),
-    .out(psum_input_en)
-);
+    tc_B_DN #(
+        .DW_DATA(DW_DATA)
+    ) u_B_DN (
+        .clk(clk),
+        .reset(reset),
+        .in_b(B_tile),
+        .out_b(mult_B)
+    );
 
-tc_array u_tc_array (
-    .clk(clk),
-    .reset(reset),
-    .in_a(wire_tile_a),
-    .in_b(wire_tile_b),
-    .out(wire_compute_result)
-);
+    tc_pe_array #(
+        .DW_DATA(DW_DATA)
+    ) u_pearray (
+        .clk(clk),
+        .reset(reset),
+        .in_a(mult_A),
+        .in_b(mult_B),
+        .out(mult_result)
+    );
 
-tc_psum #(
-    .M(M),
-    .N(N),
-    .TILE_M(TILE_M),
-    .TILE_N(TILE_N),
-    .DW_DATA(DW_OUT)
-) u_tc_psum(
-    .clk(clk),
-    .rst(reset),
-    .col(col_n),
-    .row(row_m),
-    .in(wire_compute_result),
-    .input_en(psum_input_en),
-    .out_en(out_en),
-    .out_valid(out_valid),
-    .out(out)
-);
+    tc_mergetree #(
+        .DW_DATA(DW_DATA)
+    ) u_mt (
+        .clk(clk),
+        .reset(reset),
+        .in_mult(mult_result),
+        .in_psum(C_tile),
+        .out(D_tile)
+    );
+
+    tc_Dbuffer #(
+        .DW_DATA(DW_DATA)
+    ) u_Dbuf(
+        .clk(clk),
+        .reset(reset),
+        .write_inside_en(write_d),
+        .ptr_in(ptr_D),
+        .D_tile(D_tile),
+        .ptr_out(ptr_C),
+        .C_tile(C_tile),
+        .write_outside_en(write_c),
+        .row_in(C_row),
+        .C_input(C_input),
+        .row_out(D_row),
+        .D_row_out(D_row_out)
+    );
 
 endmodule
