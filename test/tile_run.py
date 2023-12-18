@@ -7,6 +7,7 @@ class TileSimulator(object):
         self.m = 16
         self.n = 16
         self.k = 16
+        self.N_PE = 4
         self.sparsity = 0.2
         self.upper_bound = 127
 
@@ -23,7 +24,9 @@ class TileSimulator(object):
     def workload_balance(self, a):
         row_nnz = (a!=0).sum(axis=1)
         PE_wkld = np.array([0, 0, 0, 0])
-        PE_rows = [[], [], [], []]
+        PE_rows = []
+        for i in range(self.N_PE):
+            PE_rows.append([])
         for i in np.argsort(row_nnz)[::-1]:
             minPE = PE_wkld.argmin()
             PE_wkld[minPE] += row_nnz[i]
